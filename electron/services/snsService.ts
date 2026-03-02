@@ -397,14 +397,44 @@ class SnsService {
     }
 
     async getSnsUsernames(): Promise<{ success: boolean; usernames?: string[]; error?: string }> {
-        const result = await wcdbService.execQuery('sns', null, 'SELECT DISTINCT user_name FROM SnsTimeLine')
-        if (!result.success || !result.rows) {
-            // 尝试 userName 列名
-            const result2 = await wcdbService.execQuery('sns', null, 'SELECT DISTINCT userName FROM SnsTimeLine')
-            if (!result2.success || !result2.rows) return { success: false, error: result.error || result2.error }
-            return { success: true, usernames: result2.rows.map((r: any) => r.userName).filter(Boolean) }
+        const collect = (rows?: any[]): string[] => {
+            if (!Array.isArray(rows)) return []
+            const usernames: string[] = []
+            for (const row of rows) {
+                const raw = row?.user_name ?? row?.userName ?? row?.username ?? Object.values(row || {})[0]
+                const username = typeof raw === 'string' ? raw.trim() : String(raw || '').trim()
+                if (username) usernames.push(username)
+            }
+            return usernames
         }
-        return { success: true, usernames: result.rows.map((r: any) => r.user_name).filter(Boolean) }
+
+        const primary = await wcdbService.execQuery(
+            'sns',
+            null,
+            "SELECT DISTINCT user_name FROM SnsTimeLine WHERE user_name IS NOT NULL AND user_name <> ''"
+        )
+        const fallback = await wcdbService.execQuery(
+            'sns',
+            null,
+            "SELECT DISTINCT userName FROM SnsTimeLine WHERE userName IS NOT NULL AND userName <> ''"
+        )
+
+        const merged = Array.from(new Set([
+            ...collect(primary.rows),
+            ...collect(fallback.rows)
+        ]))
+
+        // 任一查询成功且拿到用户名即视为成功，避免因为列名差异导致误判为空。
+        if (merged.length > 0) {
+            return { success: true, usernames: merged }
+        }
+
+        // 两条查询都成功但无数据，说明确实没有朋友圈发布者。
+        if (primary.success || fallback.success) {
+            return { success: true, usernames: [] }
+        }
+
+        return { success: false, error: primary.error || fallback.error || '获取朋友圈联系人失败' }
     }
 
     async getUserPostCounts(): Promise<{ success: boolean; data?: Record<string, number>; error?: string }> {
